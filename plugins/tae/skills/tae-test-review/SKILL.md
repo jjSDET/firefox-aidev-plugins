@@ -9,8 +9,9 @@ description: >-
   files. Also use when authoring a new test and self-checking before submission,
   when asked to check a test against TAE conventions, classify a test
   (presence/interaction/behavior), or judge whether a helper belongs in a page
-  object vs. BasePage. Applies the framework's principles and anti-patterns as a
-  review rubric with severity tiers.
+  object vs. BasePage. Also use when auditing a converted test for assertion
+  parity against the legacy test it replaces. Applies the framework's principles
+  and anti-patterns as a review rubric with severity tiers.
 ---
 
 # Contributing to the TAE Test Framework
@@ -28,7 +29,8 @@ This one document serves two audiences:
   known gaps so review is one pass, not a loop.
 - **Reviewers — during code review.** Work from "Conducting a review". It routes
   you to the relevant principles and anti-patterns and gives severity tiers so
-  your feedback tells the author what blocks merge.
+  your feedback tells the author what blocks merge. For a conversion, start with
+  the "Parity audit" — it is the one check a green test cannot substitute for.
 
 Both audiences share the same rules; the only difference is who applies them and
 when.
@@ -51,13 +53,19 @@ Identify what the diff touches, because different files get different scrutiny:
 - **Selectors** (`selectors/*Selectors.kt`) — check anchor stability, group
   assignment, and that nothing is defined inline in a test.
 - **BasePage / helpers** — highest bar. A new primitive on BasePage is a
-  blocking discussion, not a rubber stamp.
+  blocking discussion, not a rubber stamp. A new `SelectorStrategy` has a
+  specific two-path wiring trap — see anti-patterns.
+- **`devtools/*.kt`** — anything with an `@Test` in this package runs on
+  Firebase, because the TAE flank config targets the whole package. Every
+  dev-only method needs `assumeFalse("dev tool, not a CI test", isTestLab())`.
 
 ### Severity tiers
 
 Label each finding so the author knows what blocks merge.
 
 **Blocking** — merge only after this is fixed:
+- A legacy assertion is missing from a conversion and the gap isn't documented
+  (see "Parity audit"). This one outranks everything else here.
 - Assertions interleaved with navigation in a Presence or Interaction test
   (see the Behavior exception below before flagging).
 - `Thread.sleep()` or a hand-rolled poll/wait loop.
@@ -67,6 +75,11 @@ Label each finding so the author knows what blocks merge.
 - `@After` used for state that must be clean for the next test to be valid.
 - Hard-coded click sequence to reach a page instead of a `navigateToPage()`
   edge.
+- A new `SelectorStrategy` added to only one of the two resolution paths
+  (`resolveComposeNode()`'s `candidates()` and `mozGetElement()`'s `when`). It
+  compiles and fails at runtime for whichever verb you didn't wire.
+- An `@Test` under `devtools/` without an `isTestLab()` guard — it will consume a
+  Firebase device slot on every TAE run.
 
 **Should-fix** — fix unless there's a stated reason:
 - Test can't be classified as one of the three types, or does too much to be one.
@@ -74,6 +87,15 @@ Label each finding so the author knows what blocks merge.
 - `mozVerifyElementsByGroup` used for runtime/dynamic data.
 - Popup/dialog handling added inside a test instead of in a primitive/config.
 - A wrapper method whose name adds no clarity over `primitive + selector`.
+- A selector switched from text to a tag, leaving what the text was *asserting*
+  unasserted — and often a now-dead parameter still passed by every caller.
+- A selector used by a class that sets `shouldUseExpandedToolbar = true` but only
+  verified in the default layout. That flag relocates controls and changes the
+  handles they expose.
+- A nav edge edited without grepping `to = "<TargetPage>"` across `pageObjects/`
+  first. Edges are sometimes registered twice, and the loser is invisible.
+- Step-by-step narration comments in a converted test (see "Comments in
+  converted tests").
 
 **Nit** — note it, don't block:
 - Group name could be more meaningful.
@@ -95,6 +117,11 @@ verifies its stated behavior. A green test that doesn't test the thing is
 if these hand-conversions seed factory templates, the wrong assertion
 propagates. So correctness findings stay land-blocking no matter how the gate
 below scores them.
+
+For a conversion, "correctness" means **assertion parity with the legacy test**,
+established by the diff in "Parity audit" — not by the test passing. A review of
+one 13-conversion stack found **17** legacy assertions silently missing, and none
+of them caused a failure.
 
 **Cost-of-fix gate.** For every non-correctness finding, before requesting the
 change, ask:
@@ -138,8 +165,68 @@ primitive.
 - **Batch, don't iterate.** Deliver one consolidated pass ("N trivial fixes, M
   deferred to cleanup") rather than a multi-round loop.
 
+### Parity audit (conversions only)
+
+**A dropped assertion does not fail — it passes for the wrong reason.** This is
+the single highest-yield check in a conversion review, and the only one that a
+green CI run actively disguises.
+
+`navigateToPage()` silently verifies every selector in the target page's
+`requiredForPage` group. That makes a legacy `verifyPageContent(...)` or
+`verifyUrl(...)` look redundant, so it gets dropped. What survives is the
+*navigation* assertion; what disappears is the *payload* assertion. The test
+still proves it reached a screen. It stops proving the screen is right.
+
+The audit:
+
+1. Open the legacy test body and the port side by side.
+2. List every legacy verification — `verify*` calls in the test **and** in the
+   robot helper it delegates to.
+3. Tick each one off against an explicit assertion in the port.
+4. Anything unticked is either added back explicitly, or documented as a gap in
+   **both** the test and the commit message. There is no third option.
+
+When the legacy test gets annotated (after the port is green and landed), that
+annotation is where a documented gap belongs permanently:
+
+```kotlin
+@Converted(
+    replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.AutofillTest#verifyAddressAutofillTest"],
+    bug = 2057958,
+    since = "2026-07",
+    notes = "Legacy also asserted X; not carried over — see bug NNNNN.",
+)
+```
+
+In review, check that `replacedBy` points at a real non-`@Ignore`d `@Test` (the
+conversion lint check validates this) and that any parity gap you found in step 4
+is recorded in `notes` rather than left in a review comment.
+
+Do not accept "`navigateToPage` already checks it" as a justification. An
+implicit assertion is invisible to the next person diffing the port against the
+legacy test, which makes the conversion impossible to audit. A faithful port now
+with duplicated-looking lines beats a tidy port that quietly lost coverage; house
+style gets settled in a later dedicated refactor pass.
+
+Two related traps:
+
+- **Tag swaps delete content assertions.** When a selector moves from text
+  matching to tag-only (a legitimate fix for ambiguity — see the toolbar/address
+  bar duplication), ask what the text was *asserting*. If it was content, match
+  both with `COMPOSE_BY_TAG_AND_TEXT`. Otherwise the assertion degrades to "an
+  element with this tag exists", which is nearly always true, and the parameters
+  carrying the expected values become dead — passed by every caller, read by
+  nothing.
+- **Report the inventory and the provenance.** When summarising a stack as
+  "green", state which classes the count covers and *whose* runs it covers. An
+  agent's verification and a human's are separate sets and neither is visible to
+  the other unless recorded. "39 tests green across 6 classes" for a 7-class
+  stack reads as full coverage with one class silently missing.
+
 ### Triage checklist (per changed test)
 
+0. If it's a conversion, run the **Parity audit** first. Everything below is
+   structure; this is whether the test still tests the thing.
 1. Classify it: Presence, Interaction, or Behavior. If you can't, that's a
    should-fix — the author doesn't have a clear subject.
 2. Strip the navigation mentally. Does the remaining body read as one coherent
@@ -154,6 +241,10 @@ primitive.
 6. Check every new page-object method: does it earn a `[STEP]`, and does it stay
    on the page it operates on?
 7. Check navigation: is every hop a registered edge?
+8. For a conversion, read the legacy **robot** helper, not just the legacy test
+   body. Retry/refresh semantics, per-assertion waits, and fallback behaviour
+   live in the robot. Porting the body alone yields a test that looks correct and
+   is flaky.
 
 ### The Behavior-test exception (read before flagging "interleaved assertions")
 
@@ -316,11 +407,11 @@ Define selectors once in the appropriate `selectors/*Selectors.kt` file. Assign 
 
 `mozClick`, `mozSwipeTo`, `mozVerify`, `mozVerifyElementsByGroup`, `mozEnterText`, `mozPressEnter` -- these are your building blocks. Compose tests from them.
 
-> Verified against `helpers/BasePage.kt` on 2026-07-06. This is a point-in-time
+> Verified against `helpers/BasePage.kt` on 2026-07-29. This is a point-in-time
 > snapshot — new primitives are added over time, so treat the current BasePage
-> source as authoritative if it differs. `mozVerifyElement` and `mozClear` are
-> **internal** to BasePage and are intentionally omitted; do not call them from
-> tests.
+> source as authoritative if it differs. `mozVerifyElement`, `mozGetElement`, and
+> `resolve` are **private** to BasePage; don't reach for them from tests or page
+> objects.
 
 ### Interaction primitives
 
@@ -331,6 +422,7 @@ Define selectors once in the appropriate `selectors/*Selectors.kt` file. Assign 
 | `mozClickIfPresent(selector)` | Click only if the element is present (no failure if absent) |
 | `mozClickFirstWithParentText(selector, parentText)` | Click the first match under a parent with given text |
 | `mozEnterText(text, selector)` | Enter text into a field |
+| `mozClear(selector)` | Clear a field |
 | `mozClearAndEnterText(text, selector)` | Clear then enter text |
 | `mozPressEnter(selector)` | Press the IME enter key on the field |
 | `mozSwipeTo(selector)` | Swipe until an element is visible |
@@ -355,8 +447,20 @@ Define selectors once in the appropriate `selectors/*Selectors.kt` file. Assign 
 | `mozVerifyElementIsEnabled` / `mozVerifyElementIsNotEnabled` | Verify enabled state |
 | `mozVerifyElementHasCheckedSiblingByResName` | Verify a sibling (by res name) is checked |
 | `mozVerifyElementHasSiblingWithText` | Verify a sibling has given text |
+| `mozVerifyKeyboardVisible()` / `mozIsKeyboardVisible()` | Verify / query soft-keyboard visibility |
+| `mozVerifyFileOpensInExternalApp(...)` | Verify a file hands off to an external app |
 | `verifySnackbarText(text)` | Verify a snackbar shows the given text |
 | `waitForSnackbarToBeDismissed()` | Wait for the snackbar to dismiss |
+
+`dismissKnownOverlaysIfPresent()` is public but you should almost never call it —
+`mozClick` and `mozVerify` already fire it automatically on a locate miss and
+retry once. Register new blocking overlays in `helpers/OverlayRegistry.kt` instead
+of dismissing them from a test.
+
+`BrowserPage.verifyPageContentWithReload(url, text, attempts)` is a page-object
+method, not a BasePage primitive. Reach for it when content only appears after
+async work (blocked-tracker reports, for example) — a longer wait on the current
+document never helps, because the page has to be re-fetched.
 
 The state-verification family (`...IsSelected`, `...IsChecked`, `...IsEnabled`,
 sibling checks) is easy to overlook — reach for these before writing a custom
@@ -410,7 +514,39 @@ Groups turn element lists into meaningful assertions.
 
 ### Prefer existing selector strategies
 
-The 20+ strategies in `SelectorStrategy` cover Compose, Espresso, and UIAutomator. If none works, the UI itself may need a test hook (a test tag or content description) rather than a more complex selector.
+The 25 strategies in `SelectorStrategy` (`helpers/Selector.kt`) cover Compose,
+Espresso, and UIAutomator. If none works, the UI itself may need a test hook (a
+test tag or content description) rather than a more complex selector.
+
+Ones that are easy to miss because they solve a narrow problem:
+
+| Strategy | Reach for it when |
+|---|---|
+| `COMPOSE_BY_TAG_AND_TEXT` | A tag disambiguates *and* the text is the thing being asserted. This is the fix for a tag swap that would otherwise drop a content assertion. |
+| `UIAUTOMATOR_WITH_COMPOSE_TAG` | Matching a **web/GeckoView DOM id**. It matches the raw resourceId with no package prefix, which is what web content exposes. |
+| `UIAUTOMATOR_WITH_WEB_ID_AND_TEXT` | Raw web DOM id plus exact text — e.g. asserting an autofilled value in a form field. |
+| `UIAUTOMATOR_WITH_RES_ID_CONTAINING_TEXT` | Package-prefixed app res-id plus a text substring (mirrors legacy `itemWithResIdContainingText`). |
+| `UIAUTOMATOR_WITH_DESCRIPTION_CONTAINS` | A control that **moves between surfaces** — see below. |
+
+Note the app/web split: an app View res-id wants `UIAUTOMATOR_WITH_RES_ID`
+(which prepends `packageName:id/`), while a web DOM id (`submit`, `username`)
+needs a raw-resourceId strategy. Using the app one on web content silently
+matches nothing.
+
+### Controls that relocate need a device-level handle, not a tag
+
+`shouldUseExpandedToolbar = true` is not a restyle — it moves controls between
+surfaces and changes which handles they expose. Confirmed cases: the tab counter
+moves into the bottom navigation bar and exposes **no testTag at all**, only a
+content description; "Bookmark page" moves out of the main menu, so a Compose
+content-description lookup scoped to the menu finds nothing; the search
+placeholder becomes a text node with no content description.
+
+So a testTag cannot be "the stable handle" for a control whose tag doesn't exist
+in the other layout. Prefer a device-level
+`UIAUTOMATOR_WITH_DESCRIPTION_CONTAINS`, which resolves in both — see
+`ToolbarSelectors.TAB_COUNTER_ANY_LAYOUT`. In review: any selector used by a class
+that sets the flag must have been verified in *that* layout.
 
 ## Navigation
 
@@ -463,6 +599,12 @@ These should be flagged in code review:
 | Using `mozVerifyElementsByGroup` for dynamic data | Groups are compile-time; dynamic values won't match | Use individual `mozVerify` calls with parameterized selectors |
 | Using `@After` for critical state cleanup | If the runner crashes, `@After` is not called -- leaves dirty state that can break subsequent tests or worse, cause false passes from carried-over state | Push cleanup to pre-test setup, constructor flags, or runner-level mechanisms that run regardless of crash |
 | Handling unexpected popups in test assertions | System alerts, permission dialogs, and conditional modals break tests that aren't meant to verify them | Let custom commands handle view-blocking elements via fallback conditional checks -- this keeps the fix in one place (the primitive) rather than scattered across tests |
+| Dropping a legacy assertion as "covered by `navigateToPage`" | The navigation check survives, the payload check disappears; the port passes while testing less | Restore it explicitly, or document the gap in the test *and* the commit message (see "Parity audit") |
+| Swapping text matching for a tag without asking what the text asserted | Degrades the check to "an element with this tag exists" and leaves dead parameters behind | Use `COMPOSE_BY_TAG_AND_TEXT` when the text was the assertion |
+| Step-by-step narration comments in a converted test | Restates the code and buries the parity notes that actually carry information | Keep the conversion header, TestRail link, and parity/why notes; cut the narration |
+| A new `SelectorStrategy` wired into one resolution path | `mozClick` and `mozVerify` resolve differently; compiles clean, fails at runtime for the unwired verb | Wire both `resolveComposeNode()`'s `candidates()` and `mozGetElement()`'s `when` |
+| An `@Test` under `devtools/` with no `isTestLab()` guard | The flank config targets the whole package, so it burns a Firebase slot every run | `assumeFalse("dev tool, not a CI test", isTestLab())` — not `@Ignore`, which also blocks manual runs |
+| A testTag as the handle for a control that relocates | The tag may not exist in the expanded-toolbar layout | Device-level `UIAUTOMATOR_WITH_DESCRIPTION_CONTAINS` |
 
 ## Handling unexpected popups and system dialogs
 
@@ -475,6 +617,60 @@ Don't add popup handling logic to individual tests. If a system dialog or condit
 
 The goal is stability first, speed second. Adding conditional checks for view-blocking elements in custom commands is acceptable overhead -- it's cheaper than flaky tests.
 
+## Comments in converted tests
+
+The repo-wide "almost never comment" rule still applies to narration, but a
+converted test has two comment categories that are explicitly welcome, because
+they carry context a future reader diffing against the legacy test would otherwise
+lose:
+
+1. **Parity mapping** — how the port maps to its legacy counterpart, especially
+   any leg intentionally omitted or restructured. One or two lines.
+2. **Special-case "why"** — a brief reason for something state-specific or
+   non-obvious: why an extra navigation step is needed, why a verification is
+   implicit, why a wait or flag exists.
+
+Keep the `// Converted from legacy <Class>.<method>` header and the TestRail link.
+Cut comments that restate the code (`// Load a page, open the main menu, tap
+Bookmarks` above code doing exactly that), and don't duplicate a long parity
+explanation that already lives in the commit message — condense it.
+
+Attribute a harness gap to the gap ("no stateful BookmarksPage -> BrowserPage edge
+yet"), not to a selector or locator problem.
+
+## Diagnosing a failure before blaming a selector
+
+Reviewers and authors both waste cycles here, so it's worth stating the order.
+
+**"Not found" can mean "covered", not "absent".** On a locate failure the harness
+dumps all layers — Compose, UIAutomator, Espresso — plus a `[windows]` summary
+with window titles/types, IME and overlay flags, and the currently focused input.
+**Read `[windows]` first.** A non-APPLICATION window on top means an overlay,
+popup, or keyboard covered the target; a focused input somewhere unexpected means
+focus was stolen. Neither is a selector bug. Known blocking overlays (the Android
+stylus-handwriting prompt, for one) are auto-dismissed via `OverlayRegistry`; add
+new ones there. Web-form tests should also disable the prompt deterministically
+with `settings put secure stylus_handwriting_enabled 0` before focusing a field.
+
+**Group verification names only the first missing element.**
+`mozVerifyElementsByGroup` is an `all {}`, so it short-circuits. Expect to iterate
+once per missing member, or read the dump and check the whole group in one pass.
+
+**A retry-pass is not a pass.** `clean = false` means it failed once and passed on
+retry. During conversions that's most often an overlay rather than a product bug —
+check `[windows]` before rewriting anything.
+
+**If a fix changes nothing, suspect a second definition before your diagnosis.**
+Two separate cases produced byte-identical failures after a real fix: a duplicate
+`NavigationRegistry` edge registered in another file, and a strategy added to one
+resolution path but not the other.
+
+**Gradle's JUnit XML is authoritative** for pass/fail
+(`androidTest-results/connected/debug/TEST-*.xml`); the logcat trace explains why.
+The Test Orchestrator runs each test in its own process, so one
+`run finished: 1 tests` per test plus a suite summary is normal, not a stale
+buffer.
+
 ## Before you write: checklist
 
 1. What type of test is this? (Presence / Interaction / Behavior)
@@ -484,6 +680,9 @@ The goal is stability first, speed second. Adding conditional checks for view-bl
 5. Do the page object methods (test steps) I need already exist?
 6. For any new test step: does the method name create a meaningful `[STEP]` in the log? Would a failure at that level immediately tell you what broke?
 7. If I removed all the navigation, does the test body still make sense as a spec?
+8. If this is a conversion: have I listed every `verify*` in the legacy test **and
+   its robot helper**, and does each one have an explicit counterpart here or a
+   documented gap?
 
 ## Adding a new page
 
@@ -492,3 +691,37 @@ The goal is stability first, speed second. Adding conditional checks for view-bl
 3. Register navigation edges in `init {}`
 4. Implement `mozGetSelectorsByGroup()`
 5. Add page instance to `helpers/PageContext.kt` for use in tests
+
+Two constraints that only bite later:
+
+- **A new page object can never have an empty navigation path.** The Reachability
+  factory auto-registers every page object by reflection over `PageContext` and
+  generates a "can I reach this page?" case for each. `steps = listOf()` on the
+  only edge produces a case that always fails. If the page only exists under a
+  special launch (onboarding, for example), declare a `LaunchConfig` on its
+  `AppEntry` edge instead.
+- **`requiredForPage` must be state-invariant.** Pick something present in every
+  state — a toolbar title, never an empty-list placeholder. And if the *entry*
+  control is state-dependent (the trust-panel button's tag varies with page
+  security), the edge must `ClickIfPresent` every variant. Static checks can't see
+  either of these; verify by hand whenever you build or modify navigation.
+
+## Where the rest of the documentation lives
+
+This skill is the review rubric. The full authoring reference is in-tree and is the
+source of truth — read it there rather than trusting a copy:
+
+`mobile/android/fenix/app/src/androidTest/java/org/mozilla/fenix/ui/efficiency/docs/`
+
+| Need | Read |
+|---|---|
+| Harness bug catalog + authoring checklist (the A*/B* entries cited above) | `docs/gotchas.md` |
+| Converting a legacy test end to end | `docs/converting-a-test.md` |
+| Architecture and layering | `docs/architecture.md` |
+| Tool inventory and what each gate runs | `docs/tooling.md` |
+| Selector discovery / authoring, page objects, navigation, BasePage, debugging | `docs/guides/` |
+
+The host-side `eff*` toolchain (`effcheck`, `effnext`, `effscaffold`, `effverify`,
+`effloop`, the `effwatch` bridge) lives in the **testops-tools** repo under
+`tae-conversion/`; see its README for setup. The device-side dump tools
+(`effview`, `effpretty`) ship in-tree under `ui/efficiency/devtools/`.

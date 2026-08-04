@@ -92,6 +92,12 @@ To backfill one you already filed:
 ```json
 { "bug": "update", "ids": [NNNNN], "blocks": [2030727] }
 ```
+
+To close one as a duplicate — which happens when the same test gets converted twice, see step 1 —
+`{ "bug": "update", "ids": [NNNNN], "dupe_of": MMMMM, "self_assign": false }`. `effbug` fills in
+RESOLVED/DUPLICATE for you; passing `resolution` alone is rejected, because Bugzilla will not take
+DUPLICATE without `dupe_of`. Note there is **no** API for editing a bug's description: a wrong comment 0
+can only be fixed by a human in the web UI, so get the mechanism right before you file.
 `update` wraps relation lists as `{"add": [...]}` so this appends. Never PUT a bare list to a meta bug's
 `depends_on` — Bugzilla treats that as *replace* and it would drop every other bug the meta tracks.
 
@@ -155,6 +161,17 @@ moz-phab submit --reviewer isabel_rios --reviewer aaronmt <first-new-commit>
 `testing-exception-unchanged` tag in the Phabricator web UI (no moz-phab CLI flag exists for it). moz-phab
 keys off `Differential Revision:` trailers, so base commits that carry them are excluded automatically — even
 if they landed on autoland and aren't in your local central yet.
+
+## If you rebase a stack that is already submitted
+Dropping a commit does not remove its revision from the stack graph. Abandoning the revision leaves the
+next one still recording it as a parent, with a diff based on the commit you dropped, so the stack renders
+with an abandoned revision wedged in the middle. Resubmitting the **whole** range is what re-parents it —
+submitting only the commits whose content changed leaves the stale edge in place.
+
+Two consequences to warn the engineer about before they push: every revision gets a fresh diff, because a
+rebase changes every hash, and revisions that were already accepted reset to needs-review. If avoiding
+that churn matters more than a wording fix, leave the commit messages alone — amending one forces the
+upload you were trying to avoid.
 
 ## After landing
 Re-sync the tracker so conversion counts catch up with the `@Converted` markers that landed in step 3 (see

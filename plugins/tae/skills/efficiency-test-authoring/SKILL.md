@@ -72,6 +72,10 @@ make each gate faster and safer than doing it by hand.
    to take now — too complex for whoever is picking it up, blocked on a harness gap, deliberately deferred —
    record that rather than stepping over it: `effnext --skip Class.method --reason "…"` parks it (reversible
    with `--unskip`; it never marks the test converted) and prints the new next pick.
+   **Fetch main before you pick.** Both `effnext`'s in-tree filter and `effscaffold`'s already-converted
+   check read *your checkout*, so a branch that predates someone else's landing cannot see their
+   conversion — and the duplicate then surfaces as a rebase conflict after review and submission, which is
+   how bug 2060292 ended up duplicating bug 2060174.
 1. **Scaffold + extract intent.** Run `effscaffold <Class.method> --json` first — it pulls the legacy
    body, TestRail id, whether an efficiency test of that name already exists (don't re-convert!), the
    robots + their selector lines, and which screens are already modeled. From that, write the

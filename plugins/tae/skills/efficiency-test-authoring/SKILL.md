@@ -65,9 +65,13 @@ Work the gates in order. At each gate you either compose with what exists or add
 then continue. Navigation is the spine — resolve reachability first. Lean on the tools (below); they
 make each gate faster and safer than doing it by hand.
 
-0. **Pick the next test (local, no network).** Run `effnext --json` — next unconverted candidate(s) from
-   the local prioritized pool minus what's done. **Never call the Google Sheet to choose** — it's slow and
-   the local pool is the working queue. (The Sheet is systems-of-record for status, not the per-test picker.)
+0. **Pick the next test (local, no network).** Run `effnext --json` — next candidate(s) from the local
+   prioritized pool minus what's done, minus skips, minus anything whose method already exists in the
+   efficiency tests package. **Never call the Google Sheet to choose** — it's slow and the local pool is the
+   working queue. (The Sheet is systems-of-record for status, not the per-test picker.) If the pick isn't one
+   to take now — too complex for whoever is picking it up, blocked on a harness gap, deliberately deferred —
+   record that rather than stepping over it: `effnext --skip Class.method --reason "…"` parks it (reversible
+   with `--unskip`; it never marks the test converted) and prints the new next pick.
 1. **Scaffold + extract intent.** Run `effscaffold <Class.method> --json` first — it pulls the legacy
    body, TestRail id, whether an efficiency test of that name already exists (don't re-convert!), the
    robots + their selector lines, and which screens are already modeled. From that, write the
@@ -80,7 +84,13 @@ make each gate faster and safer than doing it by hand.
    or page-object helper — new verbs go through `resolve()` and keep its guarantees (exception-safe
    presence, preserve per-strategy Compose tree). → `docs/guides/extending-basepage.md`.
 4. **Assertion gate.** Verifications expressible (`mozVerify*` family)? If not, add a verify primitive.
-   → `docs/guides/extending-basepage.md`.
+   → `docs/guides/extending-basepage.md`. Two traps worth knowing before you assert on anything you also
+   click: a disabled Compose button still *accepts* the click gesture and silently skips `onClick`, so
+   "clicked" in the report does not mean the app acted; and an enabled-check against a `COMPOSE_BY_TEXT`
+   selector is a no-op, because it resolves the text node inside the button (which reports enabled while the
+   button is disabled) — use `COMPOSE_BY_TEXT_MERGED` for anything you act on. Prefer a positive assertion
+   over waiting for something to disappear: absence cannot tell "it worked" from "the click was dropped".
+   See HARNESS-GOTCHAS A16/A17.
 5. **Static pre-flight.** Run `effcheck … --json` before spending a device build — it catches string/id
    resolution, empty nav paths (gotcha B1), inline selectors (B2), missing BasePage verbs, and
    test-class boilerplate (MWS/IMP). Fix everything it flags first.
@@ -102,8 +112,9 @@ make each gate faster and safer than doing it by hand.
    (`verifyPageContent`, `verifyUrl`, a tab count) rather than the navigation. Never justify an omission
    with "`navigateToPage` already checks it" — an implicit assertion can't be audited. If you omit a leg
    (e.g. no stateful return edge), **log it as a harness gap** in the test and the commit message — don't
-   silently drop it. THEN annotate the legacy test with `@Converted` (only after green + landed — the
-   burndown keys off it):
+   silently drop it. THEN annotate the legacy test with `@Converted`. The gate is **green locally** (gate 6's
+   `effverify` verdict); annotate it **in the same commit as the conversion** — never defer this to a
+   post-landing pass, which would need a second bug and a second review:
    ```kotlin
    @Converted(
        replacedBy = ["org.mozilla.fenix.ui.efficiency.tests.AutofillTest#verifyAddressAutofillTest"],
@@ -114,8 +125,10 @@ make each gate faster and safer than doing it by hand.
    ```
    `replacedBy` is required and every entry must resolve to a real, non-`@Ignore`d `@Test` (validated by
    the conversion lint check). Use `notes` for coverage that intentionally did not carry over — that's the
-   mechanism the parity rule above asks for. The legacy test keeps running alongside the replacement until
-   the replacement has been green on main for the configured cadence.
+   mechanism the parity rule above asks for. Annotate the legacy method **in place** — do not delete or
+   `@Ignore` it; it keeps running alongside the replacement, and the annotation is what the burndown counts.
+   Check the annotation is actually in your staged diff before committing: a conversion that lands without
+   it looks unconverted to the ledger, and this is the single most-missed step in the loop.
 8. **Land it.** Hand off to the **efficiency-conversion-loop** skill for bug → commit → Jira → submit.
 9. **Feedback.** Recurring shape (nav→click→verify) → flag as a factory candidate. Every new
    assumption-correction → add to `CONVERSION-LESSONS.md`; if it changes the workflow, update this skill.
@@ -124,7 +137,7 @@ make each gate faster and safer than doing it by hand.
 
 | Tool | Use at | Does |
 |---|---|---|
-| `effnext` | gate 0 | Next unconverted candidate(s) from the local pool minus done. Local-only, no network. `--json`. |
+| `effnext` | gate 0 | Next candidate(s): pool minus done, minus skips, minus what's already in-tree. `--skip`/`--unskip`/`--skips`. Local-only, no network. `--json`. |
 | `effscaffold` | gate 1 | Legacy body, TestRail, already-converted check, robots+selectors, existing coverage. |
 | `effdump` / `ScreenDump` | gate 2 | Dumps a screen's real handles in all 3 layers (Compose / Espresso / UIAutomator). Author from ground truth, not stubs. |
 | `effcheck` | gate 5 | Static pre-flight (no device) — resolution, nav, inline selectors, verbs, boilerplate. |

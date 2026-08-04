@@ -142,7 +142,7 @@ make each gate faster and safer than doing it by hand.
 | `effdump` / `ScreenDump` | gate 2 | Dumps a screen's real handles in all 3 layers (Compose / Espresso / UIAutomator). Author from ground truth, not stubs. |
 | `effcheck` | gate 5 | Static pre-flight (no device) — resolution, nav, inline selectors, verbs, boilerplate. |
 | `effbuild` | gate 6 | Compile verdict + only the error lines. `--json`. Read this, not the raw build log. |
-| `effverify` | gate 6 | Done-gate (scoped to the **last** run): `ok`/`clean`, `failed_total`, `runs`, `retried`, and a capped `failure_excerpt` on failure. `--json` — the agent reads THIS, never the raw report. |
+| `effverify` | gate 6 | Done-gate (aggregates **every** run block, not just the last): `ok`/`clean`, `failed_total`, `runs`, `retried`, per-test `status` incl. `retry-pass`, and a capped `failure_excerpt` on failure. `--json` — the agent reads THIS, never the raw report. |
 | `effpretty` | (human) | Renders the `Eff` run log for a **person** inspecting a run. Not part of the agent's read path. |
 | effwatch bridge | gate 6 | Runs the build/run on the engineer's device and returns reports. |
 

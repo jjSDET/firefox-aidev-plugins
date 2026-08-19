@@ -76,6 +76,11 @@ make each gate faster and safer than doing it by hand.
    check read *your checkout*, so a branch that predates someone else's landing cannot see their
    conversion — and the duplicate then surfaces as a rebase conflict after review and submission, which is
    how bug 2060292 ended up duplicating bug 2060174.
+   **And heed `⚠ already converted on <branch>`** (`also_on_branches` in JSON): the in-tree filter reads only the
+   CHECKED-OUT branch, so a conversion you already sent for review from another branch is still offered as the next
+   pick. It is advisory on purpose — `backup/*` is excluded and abandoned work lives on branches too — so confirm
+   against `SMOKE-CONVERSION-AUDIT.md` or Phabricator before redoing it. If `branches_unchecked` is non-empty, the
+   scan did not complete and its silence proves nothing.
 1. **Scaffold + extract intent.** Run `effscaffold <Class.method> --json` first — it pulls the legacy
    body, TestRail id, whether an efficiency test of that name already exists (don't re-convert!), the
    robots + their selector lines, and which screens are already modeled. From that, write the
@@ -84,6 +89,21 @@ make each gate faster and safer than doing it by hand.
    real handles** an element exposes — never trust a stubbed locator. → `docs/guides/discovering-selectors.md`
    (uses `effdump`). If a page object, its selectors, or a nav edge is missing, build it. →
    `docs/guides/adding-navigation.md`, `docs/guides/creating-a-page-object.md`, `docs/guides/authoring-selectors.md`.
+   Four traps that each cost a device cycle, all now in HARNESS-GOTCHAS:
+   * **Wire the page into `PageContext` in the same change (A59).** Edges register in the page's `init`, which only
+     runs when `PageContext` constructs it — an unreferenced page object is untested scaffolding, not available API.
+   * **Leaving a settings screen for a URL needs BOTH halves (A56).** `BrowserPage` has inbound edges only from
+     `HomePage` and itself, so add a return edge
+     (`NavigationStep.PressBackUntilGone(SettingsSelectors.NAVIGATION_TOOLBAR)`, depth-independent) **and** an
+     explicit `on.home.navigateToPage()` hop; `findPath` only searches from the currently tracked page. This failure
+     is efftriage **T19**.
+   * **An option's text is the label AND its subtext, newline-joined (A54)** — `"Block audio only\nRecommended"` —
+     so an exact-text selector built from `strings.xml` can never resolve. Match a fragment or the res-id.
+   * **A shared res-id cannot identify a screen, and `ESPRESSO_BY_ID` ignores visibility (A55).** The permission
+     screens share `ask_to_allow_radio`/`block_radio`/`third_radio`/`fourth_radio`, so an id anchor resolves on the
+     wrong screen and reports a false arrival (A45). Prefer `UIAUTOMATOR_WITH_RES_ID` when presence should imply
+     visibility — that tree holds only displayed nodes, which is also the honest replacement for legacy's
+     `withEffectiveVisibility(VISIBLE)`.
 3. **Interaction gate.** Expressible with existing `moz*` verbs? Reuse first. If not, add a primitive
    or page-object helper — new verbs go through `resolve()` and keep its guarantees (exception-safe
    presence, preserve per-strategy Compose tree). → `docs/guides/extending-basepage.md`.
@@ -95,6 +115,12 @@ make each gate faster and safer than doing it by hand.
    button is disabled) — use `COMPOSE_BY_TEXT_MERGED` for anything you act on. Prefer a positive assertion
    over waiting for something to disappear: absence cannot tell "it worked" from "the click was dropped".
    See HARNESS-GOTCHAS A16/A17.
+   **Prefer an OS/state oracle to system-UI text (A58).** A row titled "Camera" on the Android app-permissions
+   screen is present whether the permission is allowed or denied — only the section differs, and the summary that
+   would disambiguate it is rendered only up to API 30. That is why the legacy robot branched on `Build.VERSION`
+   and, above R, asserted something that could not fail. Assert
+   `appContext.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED` instead: no version branch, and it
+   cannot pass for a denied permission. Generalises to any system-UI assertion with a queryable state behind it.
 5. **Static pre-flight.** Run `effcheck … --json` before spending a device build — it catches string/id
    resolution, empty nav paths (gotcha B1), inline selectors (B2), missing BasePage verbs, and
    test-class boilerplate (MWS/IMP). Fix everything it flags first.
@@ -103,7 +129,12 @@ make each gate faster and safer than doing it by hand.
    `effverify … --json` (the named test ran, was NOT skipped, `failed_total`=0, and `clean`=true i.e. not a
    retry-pass). **Do NOT `cat` `run-report.txt` / `raw-run.log`, and do NOT read `effpretty` output** — on a
    failure, `effverify --json` now carries a capped `failure_excerpt` (exception + top frames) which is all you
-   need. `effpretty` is for a human eyeballing a run, not for the agent. "green + 0 failed" alone is NOT proof;
+   need. **Pass effverify the METHOD names, not the class** — given a class name it reports `status: not-run` and
+   `clean: false` for a fully green run; cross-check `status.json`'s `outcome` when a verdict looks wrong.
+   **`Failed to click UiObject` while the log says "found" is a selector problem, not timing (A57):** a
+   text-contains selector can resolve a non-clickable heading ("Test Camera & Microphone Dialogue" sitting above the
+   "Camera & Microphone" button). Match web content by DOM id plus label (`UIAUTOMATOR_WITH_WEB_ID_AND_TEXT`); the
+   auto-dump on the failed click already lists the id. `effpretty` is for a human eyeballing a run, not for the agent. "green + 0 failed" alone is NOT proof;
    a retry-pass (`clean`=false) is flaky, not done. → `docs/guides/debugging-tests.md`.
    On a failed step the auto-dump now covers all three layers plus a **window/focus summary** — read the
    `[windows]` block first to tell "covered by an overlay / focus stolen" from "element genuinely absent"
@@ -131,6 +162,11 @@ make each gate faster and safer than doing it by hand.
    the conversion lint check). Use `notes` for coverage that intentionally did not carry over — that's the
    mechanism the parity rule above asks for. Annotate the legacy method **in place** — do not delete or
    `@Ignore` it; it keeps running alongside the replacement, and the annotation is what the burndown counts.
+   **Verify the TestRail id against the line immediately above the legacy method, and script the comparison.**
+   Three of six ids were wrong in one sitting because they were read from a grep context window — a neighbouring
+   test's id looks identical in kind, so nothing catches it later. Compare legacy against port for every converted
+   method before filing anything: a wrong id in a bug's comment 0 cannot be edited through the API, only corrected
+   with a follow-up comment.
    Check the annotation is actually in your staged diff before committing: a conversion that lands without
    it looks unconverted to the ledger, and this is the single most-missed step in the loop.
 8. **Land it.** Hand off to the **efficiency-conversion-loop** skill for bug → commit → Jira → submit.
@@ -141,14 +177,15 @@ make each gate faster and safer than doing it by hand.
 
 | Tool | Use at | Does |
 |---|---|---|
-| `effnext` | gate 0 | Next candidate(s): pool minus done, minus skips, minus what's already in-tree. `--skip`/`--unskip`/`--skips`. Local-only, no network. `--json`. |
+| `effnext` | gate 0 | Next candidate(s): pool minus done, minus skips, minus what's already in-tree. Warns `also_on_branches` when a pick is already converted on another local branch (advisory; `backup/*` excluded), and reports `branches_unchecked` if that scan did not finish. `--skip`/`--unskip`/`--skips`. Local-only, no network. `--json`. |
 | `effscaffold` | gate 1 | Legacy body, TestRail, already-converted check, robots+selectors, existing coverage. |
 | `effdump` / `ScreenDump` | gate 2 | Dumps a screen's real handles in all 3 layers (Compose / Espresso / UIAutomator). Author from ground truth, not stubs. |
 | `effcheck` | gate 5 | Static pre-flight (no device) — resolution, nav, inline selectors, verbs, boilerplate. |
 | `effbuild` | gate 6 | Compile verdict + only the error lines. `--json`. Read this, not the raw build log. |
-| `effverify` | gate 6 | Done-gate (aggregates **every** run block, not just the last): `ok`/`clean`, `failed_total`, `runs`, `retried`, per-test `status` incl. `retry-pass`, and a capped `failure_excerpt` on failure. `--json` — the agent reads THIS, never the raw report. |
+| `effverify` | gate 6 | Done-gate (aggregates **every** run block, not just the last): `ok`/`clean`, `failed_total`, `runs`, `retried`, per-test `status` incl. `retry-pass`, and a capped `failure_excerpt` on failure. **Takes METHOD names — a class name yields a bogus `not-run`/`clean:false`.** `--json` — the agent reads THIS, never the raw report. |
 | `effpretty` | (human) | Renders the `Eff` run log for a **person** inspecting a run. Not part of the agent's read path. |
 | effwatch bridge | gate 6 | Runs the build/run on the engineer's device and returns reports. |
+| `efftriage` | gate 6 | Maps a failed run to the gotcha that explains it, with the fix. Read-only, safe on every failure. When it says "no rule matched", add a rule once you know why rather than routing around it. |
 
 Gates **3 (interaction)** and **4 (assertion)** have no tool — they're code edits (add a `moz*` verb or a
 `mozVerify*` primitive) via `docs/guides/extending-basepage.md`. `effwatch` is a persistent bridge you start once,

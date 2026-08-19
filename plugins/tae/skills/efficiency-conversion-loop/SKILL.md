@@ -77,6 +77,14 @@ Drop `conversion-runs/_queue/<id>.request.json`:
 subject exactly, and **self-assigns** to the API-key owner. It returns the number in
 `_bug/<id>.bug-result.json`.
 
+**Check the TestRail ids before you file.** Comment 0 cannot be edited through the BMO API, so a wrong id is
+permanent unless you post a correction. Compare each id against the line immediately above the legacy method (not a
+grep context window — a neighbouring test's id looks identical in kind); three of six were wrong in one sitting this
+way, and two filed bugs needed correcting comments. If you do need to correct one after filing:
+```json
+{ "bug": "update", "ids": [2064815], "comment": "Correction to comment 0: …" }
+```
+
 **Hang the bug off the tracking meta bug — `"blocks": [2030727]`.**
 [Bug 2030727](https://bugzilla.mozilla.org/show_bug.cgi?id=2030727) is `[meta] TAE - Migrate and remove
 legacy tests`; it tracks the campaign via its `depends_on` list, so each conversion bug must *block* it.
@@ -157,7 +165,14 @@ can't touch already-landed base commits:
 ```
 moz-phab submit --reviewer isabel_rios --reviewer aaronmt <first-new-commit>
 ```
-(or `python3 tae-conversion/tools/effsubmit.py --start <first-new-commit> --execute`). Then add the
+(or `python3 tae-conversion/tools/effsubmit.py --start <first-new-commit> --execute`).
+
+**A cherry-picked base whose revision is CLOSED blocks the whole submit.** Borrowing an unlanded commit as a base is
+fine for building and running, but moz-phab refuses the stack if any commit in range maps to a closed revision, and
+unpicking it late means reworking whatever depended on it. So before cherry-picking, diff what you actually need
+against `main`: on 2026-08-19 everything needed was already landed except a one-line helper written in the same
+session, so the borrowed commit was dropped and the helper inlined. And never create a file that the unlanded commit
+also creates — that is an add/add conflict on every rebase until it lands. Then add the
 `testing-exception-unchanged` tag in the Phabricator web UI (no moz-phab CLI flag exists for it). moz-phab
 keys off `Differential Revision:` trailers, so base commits that carry them are excluded automatically — even
 if they landed on autoland and aren't in your local central yet.

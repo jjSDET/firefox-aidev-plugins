@@ -47,9 +47,12 @@ truth. The skills point at those paths rather than vendoring copies, so there's 
 to update.
 
 **The host-side toolchain.** The `eff*` scripts the skills drive (`effnext`,
-`effscaffold`, `effcheck`, `effbuild`, `effverify`, `effloop`, and the `effwatch` bridge)
+`effscaffold`, `effcheck`, `effbuild`, `effverify`, `efftriage`, `effloop`, the paperwork
+helpers `effbug`/`effgit`/`effsubmit`, and the `effwatch` bridge)
 live in [`testops-tools`](https://github.com/mozilla-mobile/testops-tools) under
-`tae-conversion/`. They run on the engineer's machine and talk to a device, Bugzilla, and
+`tae-conversion/`. Every tool answers `--version` with a shared CalVer stamp
+(`tae-conversion YYYY.MM.DD`), so if a skill cites behaviour your copy does not have, check
+that first — these skills are written against **2026.08.19**. They run on the engineer's machine and talk to a device, Bugzilla, and
 Phabricator — that's infra tooling, not something to ship inside a plugin. The
 device-side dump tools (`effview`, `effpretty`) ship in-tree under
 `<framework-root>/devtools/`.

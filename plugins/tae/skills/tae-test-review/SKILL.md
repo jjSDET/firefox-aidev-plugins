@@ -245,6 +245,20 @@ Two related traps:
    body. Retry/refresh semantics, per-assertion waits, and fallback behaviour
    live in the robot. Porting the body alone yields a test that looks correct and
    is flaky.
+9. **Check the TestRail id against the legacy method it claims to replace.** It is
+   the only link back to the case, nothing downstream validates it, and an id
+   copied from a neighbouring test is invisible on review. Blocking if wrong.
+10. **Ask what each assertion would do if the feature were broken.** Two shapes
+    recur and both pass for the wrong reason: an assertion on system-UI text that
+    is present in either state (an Android app-permissions row reads "Camera"
+    whether allowed or denied), and a `Build.VERSION` branch whose modern arm
+    asserts less than its legacy arm did. If a queryable state exists behind the
+    UI — `checkSelfPermission`, a store field, a pref — assert that instead
+    (A58).
+11. **A new page object must be wired into `PageContext` in the same change**
+    (A59). Edges register in the page's `init`, which never runs otherwise, so an
+    unreferenced page object is dead code whose navigation has never executed —
+    and its arrival anchor may not even match the screen its edge lands on.
 
 ### The Behavior-test exception (read before flagging "interleaved assertions")
 
